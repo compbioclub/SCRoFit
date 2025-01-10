@@ -32,10 +32,10 @@ def knn_sparsify_aux(D, k):
     sparse_D[rows, indices] = D[rows, indices]
     return csr_matrix(sparse_D)
 
-def knn_sparsify(XY_dist, k=3,anchor='combine'):
+def knn_sparsify(XY_dist, n_neighbors=3,anchor='combine'):
     # knn sparfication
-    row_sparse = knn_sparsify_aux(XY_dist, k)
-    col_sparse = knn_sparsify_aux(XY_dist.T, k).T
+    row_sparse = knn_sparsify_aux(XY_dist, n_neighbors)
+    col_sparse = knn_sparsify_aux(XY_dist.T, n_neighbors).T
     if anchor == 'combine':
         combined = row_sparse + col_sparse
     elif anchor == 'row':
@@ -103,12 +103,30 @@ def calculate_spatial_distance(X_adata, Y_adata,
 
     return XY_dist
 
+# remove distant X source pixels
+def remove_distant_kNN(X_adata, Y_adata, ccs_type='spatial_align', 
+                       distance_method='euclidean', n_neighbors=3):
+    #X_adata: source_adata, SM
+    #Y_adata: target_data, ST
+    print('-----')
+    XY_dist = calculate_spatial_distance(X_adata, Y_adata, ccs_type=ccs_type, 
+                                         distance_method=distance_method)
+    XY_knn =  knn_sparsify(XY_dist, anchor='col', n_neighbors=n_neighbors)  
+    xs, _ = XY_knn.nonzero()
+    xs = list(set(xs))
+    Z = np.empty((X_adata.shape[0],2))
+    Z[:] = np.nan
+    Z[xs, :] = X_adata.obsm[ccs_type][xs, :]
+    X_adata.obsm[ccs_type+'_filtered'] = Z
+    Y_adata.obsm[ccs_type+'_filtered'] = Y_adata.obsm[ccs_type]
+
 def mapping_1NN(X_adata, Y_adata, 
                 ccs_type='spatial_align',
                 distance_method='euclidean'):
     #X_adata: source_adata, SM
     #Y_adata: target_data, ST
-    XY_dist = calculate_spatial_distance(X_adata, Y_adata, ccs_type=ccs_type, distance_method=distance_method)
+    XY_dist = calculate_spatial_distance(X_adata, Y_adata, ccs_type=ccs_type, 
+                                         distance_method=distance_method)
     indices = np.argmin(XY_dist, axis=1)
     F = coo_matrix((np.ones(len(indices)), (range(len(indices)), indices))).tocsr()
     X_adata.obsm['mappingflow_1NN'] = F
@@ -117,26 +135,28 @@ def mapping_1NN(X_adata, Y_adata,
       
 
 def mapping_MCMF(X_adata, Y_adata, ccs_type='spatial_align', 
-                 method='MCMF', distance_method='euclidean',
-            n_thread=4, alpha=1, beta=1, n_batch=1000,
-            gamma=1, k=3, adata_layer = 'log1p', verbose=True):
+                distance_method='euclidean', n_neighbors=3, 
+                n_thread=4, alpha=1, beta=1, n_batch=1000,
+                adata_layer = 'log1p', verbose=True):
     #X_adata: source_adata, SM
     #Y_adata: target_data, ST
     XY_dist = calculate_spatial_distance(X_adata, Y_adata, ccs_type=ccs_type, distance_method=distance_method)
-    XY_knn =  knn_sparsify(XY_dist, anchor='row')  
+    XY_knn =  knn_sparsify(XY_dist, anchor='row', n_neighbors=n_neighbors)  
 
     n_obs = X_adata.shape[0]
     batch_indices = np.array_split(np.arange(n_obs), np.ceil(n_obs / n_batch))
-
     F = np.zeros((X_adata.shape[0], Y_adata.shape[0]))
+    i = 1
     for batch in tqdm(batch_indices, total=len(batch_indices),
-                      desc='-Solving MCMF Mapping by ILP with batch'):
+                      desc='======Solving MCMF Mapping by ILP with batch'):
+        print('---batch', i, len(batch))
         x_adata = X_adata[batch]
         X = x_adata.layers[adata_layer].toarray()
         XX_func_dist = euclidean_distances(X, X)  
         batch_f = mapping_ILP(XY_knn[batch, :], XY_dist[batch, :], XX_func_dist, n_thread=n_thread,
                     alpha=alpha, beta=beta, verbose=verbose)
         F[batch, :] = batch_f
+        i += 1
     X_adata.obsm['mappingflow_MCMF'] = csr_matrix(F)
 
 

@@ -53,14 +53,15 @@ def customize_exp_cmap():
     return custom_cmap
 
 
-def plot_CCS(obj, s=1, ncol=3, figsize=(10, 10), fig_fn=None):
+def plot_CCS(obj, s=1, ncol=3, nrow=None, figsize=(10, 10), fig_fn=None):
 
     adata_dict = obj.adata_dict
-    adata = list(adata_dict.values())[0]
+    adata = list(adata_dict.values())[1]
 
     fig = plt.figure(figsize=figsize)
-    nsub = len(adata.obsm.keys()) + len(adata_dict)
-    nrow = int(np.ceil(nsub / ncol))
+    nsub = len(adata.obsm.keys()) * len(adata_dict)
+    if nrow is None:
+        nrow = int(np.ceil(nsub / ncol))
 
     i = 1
     for key, adata in adata_dict.items():
@@ -73,15 +74,32 @@ def plot_CCS(obj, s=1, ncol=3, figsize=(10, 10), fig_fn=None):
     for ccs_type in adata.obsm.keys():
         if not ccs_type.startswith('spatial_'):
             continue
+        if ccs_type.endswith('_map'):
+            continue        
         plt.subplot(nrow, ncol, i)
         for key, adata in adata_dict.items():
             if ccs_type in adata.obsm:
                 points = adata.obsm[ccs_type]
                 plt.scatter(points[:, 0], points[:, 1], label=key, s=s)
-            plt.legend()
-            plt.title(f'CCS: {ccs_type}')
-            i += 1
+                plt.legend()
+        plt.title(f'CCS: {ccs_type}')
+        i += 1
 
+    for ccs_type in adata.obsm.keys():
+        if not ccs_type.startswith('spatial_'):
+            continue
+        if not ccs_type.endswith('_map'):
+            continue        
+        plt.subplot(nrow, ncol, i)
+        for key, adata in adata_dict.items():
+            if ccs_type in adata.obsm:
+                points = adata.obsm[ccs_type]
+                plt.scatter(points[:, 0], points[:, 1], label=key, s=s)
+                plt.legend()
+        plt.title(f'OCS: {ccs_type}\n Size: {points.shape[0]}')
+        i += 1
+
+    #plt.tight_layout()
     plt.suptitle(obj.sample)
     if fig_fn is not None:
         fig.savefig(fig_fn)

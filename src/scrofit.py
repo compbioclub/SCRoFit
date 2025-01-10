@@ -10,7 +10,7 @@ import src.preprocessing as pp
 from src.alignment import align_slides
 import src.plotting as pl
 from src.util import print_msg
-from src.mapping import mapping_MCMF, mapping_1NN, adjusting_position
+from src.mapping import mapping_MCMF, mapping_1NN, adjusting_position, remove_distant_kNN
 
 
 class SCRoFit(object):
@@ -27,22 +27,22 @@ class SCRoFit(object):
             if key.startswith('SM'):
                 pp.preprocess(adata, min_genes=100, min_cells=5)
 
-    def check_slides(self, s=1):
-        pl.plot_CCS(self, s=s)
+    def check_slides(self, s=1, ncol=3, nrow=2, figsize=(10, 8), fig_fn=None):
+        pl.plot_CCS(self, s=s, ncol=ncol, nrow=nrow, figsize=figsize, fig_fn=fig_fn)
 
     def flip_slides(self, key, direction='hv'):
         if 'v' in direction:
             max = self.adata_dict[key].obsm['spatial'][:, 1].max()
             self.adata_dict[key].obsm['spatial'][:, 1] = max - self.adata_dict[key].obsm['spatial'][:, 1]
-        if 'v' in direction:
+        if 'h' in direction:
             max = self.adata_dict[key].obsm['spatial'][:, 0].max()
             self.adata_dict[key].obsm['spatial'][:, 0] = max - self.adata_dict[key].obsm['spatial'][:, 0]
-        pl.plot_CCS(self)
+        #pl.plot_CCS(self)
 
     def align_slides(self, anchor_key='ST', method='rir', figsize=(10, 8),
                      echo=True, plot=True):
         if echo:
-            print(f'COSPA aligning slides to {anchor_key} with {method}...')
+            print(f'SCRoFit aligning slides to {anchor_key} with {method}...')
 
         if 'spatial_' + method not in self.adata_dict[anchor_key].obsm.keys():
             align_slides(self.adata_dict, anchor_key=anchor_key, method=method)
@@ -53,18 +53,49 @@ class SCRoFit(object):
 
     def mapping(self, source_key='SM', target_key='ST', mapping_method='MCMF',
                 ccs_type='spatial_align', distance_method='euclidean', 
-                n_thread=4, alpha=1, beta=1, k=3, n_batch=1000,
+                n_neighbors=3, filter_target=True,
+                n_thread=4, alpha=1, beta=1, n_batch=1000,
                 adata_layer='log1p', verbose=True):
         X_adata = self.adata_dict[source_key]
         Y_adata = self.adata_dict[target_key]
+
+        if filter_target:
+            # remove distant X source pixels
+            remove_distant_kNN(X_adata, Y_adata, ccs_type=ccs_type, 
+                    distance_method=distance_method, n_neighbors=n_neighbors)               
+            ccs_type += '_filtered'
+
         if mapping_method == '1NN':
-            mapping_1NN(X_adata, Y_adata, ccs_type=ccs_type, distance_method=distance_method)        
+            mapping_1NN(X_adata, Y_adata, ccs_type=ccs_type, 
+                        distance_method=distance_method
+                        )        
         if mapping_method == 'MCMF':
-            mapping_MCMF(X_adata, Y_adata, ccs_type=ccs_type, k=k,
+            mapping_MCMF(X_adata, Y_adata, ccs_type=ccs_type, 
+                         n_neighbors=n_neighbors, 
                     n_thread=n_thread, n_batch=n_batch, alpha=alpha, beta=beta,
                     adata_layer=adata_layer, verbose=verbose)
             
-        adjusting_position(X_adata, Y_adata, mapping_method=mapping_method)
+        adjusting_position(X_adata, Y_adata, mapping_method=mapping_method, ccs_type=ccs_type)
 
+    def transfer_anno(self, headers, source_key='ST', target_key='SM', 
+                      mapping_method='MCMF',
+                      verbose=True):
 
+        X_adata = self.adata_dict[source_key]
+        Y_adata = self.adata_dict[target_key]    
+        F = Y_adata.obsm['mappingflow_MCMF']
 
+        ys, xs = F.nonzero()
+        cols = list(set(headers) & set(X_adata.obs.columns))
+        df = X_adata[xs, :].obs[cols].copy()
+        df['ST_id'] = df.index
+        df.index = Y_adata[ys, :].obs.index
+        for x in df.columns:
+            col = source_key + '_' + x 
+            Y_adata.obs[col] = df[x].to_dict()
+
+        cols = list(set(headers) & set(X_adata.var_names))
+        for col in cols:
+            df[col] = X_adata[xs, col].X.todense()
+            Y_adata.obs[col] = df[col].to_dict()
+            
